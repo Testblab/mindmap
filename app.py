@@ -202,39 +202,42 @@ def build_mind_map(company: str, data: Dict[str, List[str]]) -> Network:
     # Définir les options du graphe. L'activation du mode hiérarchique permet
     # d'obtenir une représentation arborescente claire : le nœud racine en
     # haut, les produits au niveau suivant, puis les fonctionnalités.
+    # Définir les options du graphe sous forme de JSON brut (sans préfixe
+    # ``var options =``), tel qu'attendu par pyvis. Les clés doivent être
+    # entourées de guillemets pour être valides en JSON.
     net.set_options(
         """
-        var options = {
-          layout: {
-            hierarchical: {
-              enabled: true,
-              direction: "UD",
-              sortMethod: "hubsize",
-              levelSeparation: 200,
-              nodeSpacing: 150
+        {
+          "layout": {
+            "hierarchical": {
+              "enabled": true,
+              "direction": "UD",
+              "sortMethod": "hubsize",
+              "levelSeparation": 200,
+              "nodeSpacing": 150
             }
           },
-          nodes: {
-            font: {
-              size: 14
+          "nodes": {
+            "font": {
+              "size": 14
             },
-            shape: "box"
+            "shape": "box"
           },
-          edges: {
-            color: {
-              color: "#888888"
+          "edges": {
+            "color": {
+              "color": "#888888"
             },
-            arrows: {
-              to: { enabled: false }
+            "arrows": {
+              "to": { "enabled": false }
             },
-            smooth: {
-              enabled: false
+            "smooth": {
+              "enabled": false
             }
           },
-          physics: {
-            enabled: false
+          "physics": {
+            "enabled": false
           }
-        };
+        }
         """
     )
     return net
