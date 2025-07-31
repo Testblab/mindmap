@@ -5,3 +5,5 @@ requests==2.31.0
 beautifulsoup4==4.12.2
 googlesearch-python==1.2.3
 duckduckgo_search
+pysummarization
+yake
