@@ -56,6 +56,88 @@ except Exception:
     # simples.
     SUMMARY_AVAILABLE = False
 
+# Importation conditionnelle de spaCy pour le filtrage linguistique. spaCy
+# permet de ne conserver que les substantifs ou groupes nominaux (nom d'un
+# produit ou d'une fonctionnalité) et d'ignorer les mots inutiles comme les
+# verbes ou les mois. Pour utiliser spaCy, vous devrez installer le paquet et
+# télécharger les modèles linguistiques (`python -m spacy download fr_core_news_sm` et/ou
+# `en_core_web_sm`).
+try:
+    import spacy  # type: ignore
+    try:
+        nlp_fr = spacy.load("fr_core_news_sm")  # type: ignore
+    except Exception:
+        nlp_fr = None  # type: ignore
+    try:
+        nlp_en = spacy.load("en_core_web_sm")  # type: ignore
+    except Exception:
+        nlp_en = None  # type: ignore
+    SPACY_AVAILABLE = True
+except Exception:
+    SPACY_AVAILABLE = False
+    nlp_fr = None
+    nlp_en = None
+
+# Définitions de listes d'exclusion pour les mois et quelques mots courants qui
+# ne doivent pas être considérés comme des fonctionnalités ou noms de produit.
+FRENCH_MONTHS = {
+    "janvier", "février", "fevrier", "mars", "avril", "mai", "juin",
+    "juillet", "août", "aout", "septembre", "octobre", "novembre", "décembre", "decembre"
+}
+ENGLISH_MONTHS = {
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december"
+}
+COMMON_EXCLUDE_WORDS = {
+    "présentation", "annonce", "nouveau", "nouvelle", "lancement", "update",
+    "mise à jour", "release", "présente", "introduit", "introducing", "launch"
+}
+
+
+def _is_valid_feature(candidate: str, company: str, product_name: str) -> bool:
+    """Déterminer si une chaîne est un candidat valable pour une fonctionnalité.
+
+    Cette fonction applique différents filtres : suppression des chaînes
+    vides, des mois (français et anglais), des mots d'exclusion courants et
+    des chaînes contenant le nom de l'entreprise ou du produit. Si spaCy est
+    disponible, seuls les tokens ayant une catégorie grammaticale de nom
+    (NOUN/PROPN) sont acceptés.
+
+    Args:
+        candidate: chaîne à évaluer.
+        company: nom de l'entreprise.
+        product_name: nom du produit.
+
+    Returns:
+        True si la chaîne est jugée valide comme fonctionnalité, False sinon.
+    """
+    c = candidate.strip()
+    if not c:
+        return False
+    lower = c.lower()
+    # Exclure si trop long ou trop court
+    if len(c.split()) > 6 or len(c.split()) < 1:
+        return False
+    # Exclure si contient le nom de l'entreprise ou du produit
+    if company.lower() in lower or product_name.lower() in lower:
+        return False
+    # Exclure si le mot correspond à un mois ou un mot commun
+    if lower in FRENCH_MONTHS or lower in ENGLISH_MONTHS or lower in COMMON_EXCLUDE_WORDS:
+        return False
+    # Utiliser spaCy pour s'assurer qu'au moins un token pertinent est un nom
+    if SPACY_AVAILABLE:
+        # Choisir le modèle en fonction de la présence d'accents comme proxy
+        uses_fr = any(char in "éèàçîôûùëêïùœûæ" for char in lower)
+        nlp_model = nlp_fr if uses_fr and nlp_fr is not None else nlp_en
+        if nlp_model is not None:
+            doc = nlp_model(c)
+            # Accepter si le premier token ou au moins un token significatif est un nom/propre
+            for token in doc:
+                if token.pos_ in {"NOUN", "PROPN", "ADJ"} and not token.is_stop:
+                    return True
+            return False
+    return True
+
 try:
     # ``duckduckgo_search`` permet de faire des recherches sans clé API et sans
     # dépendance à un moteur comme Google ou Bing. Si ce module n'est pas
@@ -152,7 +234,12 @@ def extract_products_features_from_url(url: str, company: str) -> Dict[str, List
                 parent_name = parent_heading.get_text(separator=" ").strip() or "Fonctionnalités diverses"
             product_map.setdefault(parent_name, [])
             for item in items:
-                if item and item not in product_map[parent_name]:
+                # Filtrer les éléments de liste pour ne conserver que des noms de fonctionnalité pertinents
+                if not item:
+                    continue
+                if not _is_valid_feature(item, company, parent_name):
+                    continue
+                if item not in product_map[parent_name]:
                     product_map[parent_name].append(item)
         # Chercher des fonctionnalités dans les paragraphes suivants chaque titre
         for heading in soup.find_all(["h1", "h2", "h3"]):
@@ -178,16 +265,9 @@ def extract_products_features_from_url(url: str, company: str) -> Dict[str, List
                 candidates = re.split(r"[\n•\-;:\.]", text)
                 for cand in candidates:
                     c = cand.strip()
-                    # Appliquer quelques filtres pour éviter d'ajouter des phrases complètes ou vides
-                    if not c:
+                    # Ne conserver que les fragments valides, filtrés par notre fonction.
+                    if not _is_valid_feature(c, company, product_name):
                         continue
-                    # Éviter des morceaux trop longs ou répétitifs
-                    if len(c.split()) > 8:
-                        continue
-                    # Éviter d'ajouter le nom de l'entreprise ou du produit en tant que fonctionnalité
-                    if company.lower() in c.lower() or product_name.lower() in c.lower():
-                        continue
-                    # Ne pas ajouter si déjà présent
                     if c not in product_map[product_name]:
                         product_map[product_name].append(c)
             # Après avoir collecté le texte de la section, appliquer un résumé et une
