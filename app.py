@@ -30,167 +30,99 @@ This file should be executed from the repository root or with the working
 directory set to the same folder containing this file.
 """
 
-from __future__ import annotations
 
-import re
-from typing import Dict, List, Any, Iterable, Optional
 
-from flask import Flask, render_template, request, jsonify
-from flask_cors import CORS  # type: ignore
+import streamlit as st
 import requests
-from bs4 import BeautifulSoup  # type: ignore
-try:
-    from googlesearch import search  # type: ignore
-except ImportError:
-    # Provide a clear error message if googlesearch isn't installed.
-    raise RuntimeError(
-        "The 'googlesearch' package is required. Please install it with: "
-        "pip install googlesearch-python"
-    )
+from bs4 import BeautifulSoup
+from googlesearch import search
+import json
 
+st.set_page_config(page_title="Mind Map des Produits", layout="wide")
+st.title("🧠 Générateur de Mind Map de Produits d'une Entreprise")
 
-app: Flask = Flask(__name__)
-CORS(app)  # enable CORS so that fetch requests from the same origin work without issues
+# Entrées utilisateur
+company = st.text_input("Nom de l'entreprise")
+year = st.text_input("Année (ex : 2024)")
 
+if st.button("Générer") and company and year:
+    with st.spinner("Recherche des produits et fonctionnalités..."):
 
-def scrape_company_products(company_name: str, year: str, *, max_results: int = 5) -> List[Dict[str, Any]]:
-    """Scrape search results for the given company and year and extract products and features.
+        def get_links(query):
+            try:
+                return list(search(query, num_results=10))
+            except Exception as e:
+                return []
 
-    The function performs a Google search for the company name and year along
-    with French keywords for "product" and "features". It then iterates over
-    the top ``max_results`` search results, downloads the page content, and
-    uses regular expressions to find potential product names and feature
-    descriptions.
+        def extract_info_from_url(url):
+            try:
+                resp = requests.get(url, timeout=5)
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                text = soup.get_text()
+                return text
+            except:
+                return ""
 
-    Args:
-        company_name: The name of the company to search for.
-        year: The year to include in the search query.
-        max_results: The maximum number of search results to parse.
+        def extract_mindmap(company, year):
+            query = f"{company} produits fonctionnalités {year}"
+            links = get_links(query)
+            data = {}
+            for link in links:
+                content = extract_info_from_url(link)
+                if company.lower() in content.lower():
+                    # Extraction très basique par phrases contenant "produit" ou "fonctionnalité"
+                    lines = content.split(".\n")
+                    for line in lines:
+                        if "produit" in line.lower() or "fonctionnalité" in line.lower():
+                            for word in line.split():
+                                if word.istitle():
+                                    prod = word.strip(".,:;()[]")
+                                    if prod not in data:
+                                        data[prod] = []
+                                    if "fonctionnalité" in line.lower():
+                                        data[prod].append(line.strip())
+            return data
 
-    Returns:
-        A list of dictionaries. Each dictionary has a 'name' key for the
-        product name and a 'features' key which is a list of strings
-        describing the product's features.
+        mindmap_data = extract_mindmap(company, year)
 
-    Note:
-        This is a very naive implementation intended for demonstration
-        purposes only. It does not respect robots.txt nor the terms of
-        service of the websites it scrapes. For production use, please
-        consider using official APIs or datasets and always comply with
-        websites' usage policies.
-    """
+        if not mindmap_data:
+            st.warning("Aucune information trouvée.")
+        else:
+            st.success("Données récupérées !")
 
-    query: str = f"{company_name} {year} produit fonctionnalités"
-    product_features: Dict[str, List[str]] = {}
+            import streamlit.components.v1 as components
 
-    # Perform a Google search. Using 'lang=fr' prioritises French results.
-    results: Iterable[str] = search(query, num_results=max_results, lang="fr")
+            # Générer le HTML jsMind
+            def make_jsmind_json(data):
+                result = [{"id": "root", "isroot": True, "topic": company}]
+                pid = 0
+                for i, prod in enumerate(data):
+                    prod_id = f"p{i}"
+                    result.append({"id": prod_id, "parentid": "root", "topic": prod})
+                    for j, feat in enumerate(data[prod]):
+                        result.append({"id": f"f{i}{j}", "parentid": prod_id, "topic": feat[:50] + ('...' if len(feat) > 50 else '')})
+                return result
 
-    for url in results:
-        try:
-            response = requests.get(url, timeout=10)
-            # Skip non‑HTML content types
-            content_type: Optional[str] = response.headers.get("Content-Type")
-            if content_type and "text/html" not in content_type:
-                continue
-            html: str = response.text
-        except Exception as exc:
-            # Skip URLs that can't be fetched
-            print(f"[scrape_company_products] Failed to fetch {url}: {exc}")
-            continue
+            tree_data = make_jsmind_json(mindmap_data)
+            tree_json = json.dumps(tree_data)
 
-        soup: BeautifulSoup = BeautifulSoup(html, "html.parser")
-        # Extract visible text from the page
-        text: str = soup.get_text(separator=" ")
+            html_code = f"""
+            <div id="jsmind_container" style="width:100%;height:500px;border:1px solid #ccc"></div>
+            <script src="https://cdn.jsdelivr.net/npm/jsmind@0.4.6/es6/jsmind.js"></script>
+            <link type="text/css" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jsmind@0.4.6/style/jsmind.css" />
+            <script>
+                const mind = {{"meta":{{"name":"mindmap"}},"format":"node_tree","data":{json.dumps(tree_data[0])}}};
+                mind.data.children = {json.dumps(tree_data[1:])};
+                const options = {{
+                    container: 'jsmind_container',
+                    editable: false,
+                    theme: 'primary'
+                }};
+                const jm = new jsMind(options);
+                jm.show(mind);
+            </script>
+            """
+            components.html(html_code, height=550)
 
-        # Regex to find product names that follow terms like "produit" or "service"
-        # It captures one or more capitalised words (including hyphens) after these keywords.
-        product_pattern = re.compile(r"(?:produit|produits|service|services)\s+([A-ZÉÈÂÔÊÀÇ][\w-]*(?:\s+[A-ZÉÈÂÔÊÀÇ][\w-]*)*)", re.I)
-        # Find all potential product names
-        matches: List[str] = product_pattern.findall(text)
-        for match in matches:
-            product: str = match.strip()
-            # Find sentences containing the product name (within ~200 characters)
-            sentence_pattern = re.compile(rf"(\b{re.escape(product)}[^\.{{}}]{{0,200}}\.)", re.IGNORECASE)
-            sentences: List[str] = sentence_pattern.findall(text)
-            features: List[str] = []
-            for sent in sentences:
-                cleaned: str = " ".join(sent.split())  # normalise whitespace
-                # Only consider sentences that are not too long and contain verbs like "offre", "permet", "comprend"
-                if len(cleaned.split()) <= 60 and re.search(r"offre|permet|comprend|inclut|doté", cleaned, re.IGNORECASE):
-                    features.append(cleaned)
-            if not features:
-                # If we didn't find sentences with verbs, still store at least the product name itself
-                features.append("Informations limitées sur les fonctionnalités disponibles.")
-            if product in product_features:
-                # Extend and deduplicate later
-                product_features[product].extend(features)
-            else:
-                product_features[product] = features
-
-    # Construct the result list, deduplicating features
-    results_list: List[Dict[str, Any]] = []
-    for product, feats in product_features.items():
-        unique_features: List[str] = list(dict.fromkeys(feats))
-        results_list.append({"name": product, "features": unique_features})
-
-    return results_list
-
-
-@app.route("/")
-def index() -> str:
-    """Serve the main HTML page."""
-    return render_template("index.html")
-
-
-@app.route("/generate", methods=["POST"])
-def generate() -> Any:
-    """API endpoint to generate mind map data for a given company and year.
-
-    Expects a JSON payload with 'company' and 'year'. Returns a JSON object
-    structured according to the format expected by the jsMind library.
-    """
-    data: Dict[str, Any] = request.get_json(force=True) or {}
-    company: str = data.get("company", "").strip()
-    year: str = str(data.get("year", "")).strip()
-    if not company or not year:
-        return jsonify({"error": "Les champs 'company' et 'year' sont obligatoires."}), 400
-
-    # Scrape the products and features
-    nodes: List[Dict[str, Any]] = scrape_company_products(company, year)
-
-    # Build the jsMind tree structure
-    tree: Dict[str, Any] = {
-        "meta": {
-            "name": f"{company} {year} produits",
-            "author": "MindMap App",
-            "version": "1.0"
-        },
-        "format": "node_tree",
-        "data": {
-            "id": "root",
-            "topic": f"{company} {year}",
-            "children": []  # type: ignore
-        }
-    }
-
-    for idx, item in enumerate(nodes, start=1):
-        product_node: Dict[str, Any] = {
-            "id": f"product{idx}",
-            "topic": item['name'],
-            "children": []
-        }
-        for jdx, feat in enumerate(item['features'], start=1):
-            feature_node: Dict[str, Any] = {
-                "id": f"product{idx}_feat{jdx}",
-                "topic": feat
-            }
-            product_node["children"].append(feature_node)
-        tree["data"]["children"].append(product_node)
-
-    return jsonify(tree)
-
-
-if __name__ == "__main__":
-    # Run the Flask development server
-    app.run(debug=True)
+else:
+    st.info("Veuillez entrer un nom d'entreprise et une année pour générer la carte.")
