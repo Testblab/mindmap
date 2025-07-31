@@ -7,3 +7,4 @@ googlesearch-python==1.2.3
 duckduckgo_search
 pysummarization
 yake
+spacy
