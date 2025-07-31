@@ -41,6 +41,21 @@ from pyvis.network import Network  # type: ignore
 import streamlit.components.v1 as components
 import json
 
+# Importation conditionnelle pour les modules de résumé et d'extraction de mots‑clés.
+try:
+    # pysummarization pour générer un résumé condensé du texte
+    from pysummarization.nlpbase.auto_abstractor import AutoAbstractor
+    from pysummarization.tokenizabledoc.simple_tokenizer import SimpleTokenizer
+    from pysummarization.abstractabledoc.top_n_rank_abstractor import TopNRankAbstractor
+    # YAKE pour l'extraction de mots‑clés
+    import yake  # type: ignore
+    SUMMARY_AVAILABLE = True
+except Exception:
+    # Si les modules ne sont pas disponibles, les fonctionnalités avancées de
+    # résumé/mots clés seront désactivées et le code retournera aux heuristiques
+    # simples.
+    SUMMARY_AVAILABLE = False
+
 try:
     # ``duckduckgo_search`` permet de faire des recherches sans clé API et sans
     # dépendance à un moteur comme Google ou Bing. Si ce module n'est pas
@@ -139,6 +154,73 @@ def extract_products_features_from_url(url: str, company: str) -> Dict[str, List
             for item in items:
                 if item and item not in product_map[parent_name]:
                     product_map[parent_name].append(item)
+        # Chercher des fonctionnalités dans les paragraphes suivants chaque titre
+        for heading in soup.find_all(["h1", "h2", "h3"]):
+            product_name = heading.get_text(separator=" ").strip()
+            if not product_name:
+                continue
+            # Initialiser la liste si besoin
+            product_map.setdefault(product_name, [])
+            # Préparer un conteneur pour le texte de la section afin de réaliser
+            # éventuellement un résumé et une extraction de mots‑clés.
+            section_text_parts: List[str] = []
+            # Parcourir les éléments qui suivent ce titre jusqu'au prochain titre de niveau similaire
+            for sibling in heading.find_next_siblings():
+                if sibling.name in ["h1", "h2", "h3"]:
+                    break
+                # Rechercher du texte riche en informations potentiellement séparé par des puces, des points ou des tirets
+                text = sibling.get_text(separator=" ").strip()
+                if not text:
+                    continue
+                section_text_parts.append(text)
+                # Fractionner sur des séparateurs courants (points, virgules, tirets, listes, etc.)
+                import re
+                candidates = re.split(r"[\n•\-;:\.]", text)
+                for cand in candidates:
+                    c = cand.strip()
+                    # Appliquer quelques filtres pour éviter d'ajouter des phrases complètes ou vides
+                    if not c:
+                        continue
+                    # Éviter des morceaux trop longs ou répétitifs
+                    if len(c.split()) > 8:
+                        continue
+                    # Éviter d'ajouter le nom de l'entreprise ou du produit en tant que fonctionnalité
+                    if company.lower() in c.lower() or product_name.lower() in c.lower():
+                        continue
+                    # Ne pas ajouter si déjà présent
+                    if c not in product_map[product_name]:
+                        product_map[product_name].append(c)
+            # Après avoir collecté le texte de la section, appliquer un résumé et une
+            # extraction de mots‑clés si les modules nécessaires sont disponibles.
+            if SUMMARY_AVAILABLE and section_text_parts:
+                try:
+                    full_section_text = " ".join(section_text_parts)
+                    # Résumé automatique de la section
+                    auto_abstractor = AutoAbstractor()
+                    auto_abstractor.tokenizable_doc = SimpleTokenizer()
+                    auto_abstractor.delimiter_list = [".", "\n"]
+                    abstractable_doc = TopNRankAbstractor()
+                    summary_dict = auto_abstractor.summarize(full_section_text, abstractable_doc)
+                    summary_sentences: List[str] = summary_dict.get("summarize_result", [])  # type: ignore
+                    summary_text = " ".join(summary_sentences)
+                    # Extraction de mots‑clés avec YAKE
+                    language = "fr" if any(
+                        char in "éèàçîôûùëêï" for char in summary_text[:100]
+                    ) else "en"
+                    kw_extractor = yake.KeywordExtractor(lan=language, n=1, top=5)
+                    keywords_with_scores = kw_extractor.extract_keywords(summary_text)
+                    for kw, score in keywords_with_scores:
+                        kw_clean = kw.strip()
+                        # Filtrer les mots‑clés qui contiennent le nom de l'entreprise ou du produit
+                        if not kw_clean:
+                            continue
+                        if company.lower() in kw_clean.lower() or product_name.lower() in kw_clean.lower():
+                            continue
+                        if kw_clean not in product_map[product_name]:
+                            product_map[product_name].append(kw_clean)
+                except Exception:
+                    # En cas d'échec du résumé ou de l'extraction, passer
+                    pass
         return product_map
     except Exception:
         # En cas d'erreur réseau ou de parsing, retourner un dictionnaire vide.
@@ -289,8 +371,10 @@ def main() -> None:
         - `duckduckgo_search` *(permet la recherche sur DuckDuckGo)*
         - `networkx`
         - `pyvis`
+        - `pysummarization` *(facultatif : pour résumer les textes et en extraire les points clés)*
+        - `yake` *(facultatif : pour l'extraction de mots‑clés)*
         \n
-        Installez-les avec : `pip install streamlit beautifulsoup4 requests duckduckgo_search networkx pyvis`.
+        Installez-les avec : `pip install streamlit beautifulsoup4 requests duckduckgo_search networkx pyvis pysummarization yake`.
         """
     )
 
