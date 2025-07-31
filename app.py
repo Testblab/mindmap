@@ -39,6 +39,7 @@ import requests
 import networkx as nx  # type: ignore
 from pyvis.network import Network  # type: ignore
 import streamlit.components.v1 as components
+import json
 
 try:
     # ``duckduckgo_search`` permet de faire des recherches sans clé API et sans
@@ -202,44 +203,31 @@ def build_mind_map(company: str, data: Dict[str, List[str]]) -> Network:
     # Définir les options du graphe. L'activation du mode hiérarchique permet
     # d'obtenir une représentation arborescente claire : le nœud racine en
     # haut, les produits au niveau suivant, puis les fonctionnalités.
-    # Définir les options du graphe sous forme de JSON brut (sans préfixe
-    # ``var options =``), tel qu'attendu par pyvis. Les clés doivent être
-    # entourées de guillemets pour être valides en JSON.
-    net.set_options(
-        """
-        {
-          "layout": {
+    # Préparer la configuration du graphe dans un dictionnaire Python. Elle sera
+    # transformée en JSON via ``json.dumps`` afin de garantir que le format est
+    # correct pour pyvis (pas de code JavaScript ni de caractère inattendu).
+    options = {
+        "layout": {
             "hierarchical": {
-              "enabled": true,
-              "direction": "UD",
-              "sortMethod": "hubsize",
-              "levelSeparation": 200,
-              "nodeSpacing": 150
+                "enabled": True,
+                "direction": "UD",
+                "sortMethod": "hubsize",
+                "levelSeparation": 200,
+                "nodeSpacing": 150,
             }
-          },
-          "nodes": {
-            "font": {
-              "size": 14
-            },
-            "shape": "box"
-          },
-          "edges": {
-            "color": {
-              "color": "#888888"
-            },
-            "arrows": {
-              "to": { "enabled": false }
-            },
-            "smooth": {
-              "enabled": false
-            }
-          },
-          "physics": {
-            "enabled": false
-          }
-        }
-        """
-    )
+        },
+        "nodes": {
+            "font": {"size": 14},
+            "shape": "box",
+        },
+        "edges": {
+            "color": {"color": "#888888"},
+            "arrows": {"to": {"enabled": False}},
+            "smooth": {"enabled": False},
+        },
+        "physics": {"enabled": False},
+    }
+    net.set_options(json.dumps(options))
     return net
 
 
