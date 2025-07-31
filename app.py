@@ -67,15 +67,24 @@ def search_company_products(company: str, year: str, max_results: int = 5) -> Li
     """
     query = f"{company} produits fonctionnalités {year}"
     urls: List[str] = []
+    # Vérifier si le module ``duckduckgo_search`` est disponible. Dans le cas
+    # contraire, lever une exception explicite afin que l'appelant puisse
+    # informer l'utilisateur de la nécessité d'installer la dépendance.
     if DDGS is None:
-        # Si ``duckduckgo_search`` n'est pas disponible, retourner une liste vide.
-        return urls
+        raise ImportError(
+            "Le module duckduckgo_search n'est pas installé. "
+            "Veuillez exécuter `pip install duckduckgo_search` pour permettre la recherche."
+        )
     # Utilisation du contexte manager pour s'assurer de la fermeture des sessions.
     with DDGS() as ddgs:
-        for result in ddgs.text(query, region="wt-wt", safesearch="Moderate", max_results=max_results):
-            href = result.get("href")
-            if href:
-                urls.append(href)
+        try:
+            for result in ddgs.text(query, region="fr-fr", safesearch="Moderate", max_results=max_results):
+                href = result.get("href")
+                if href:
+                    urls.append(href)
+        except Exception:
+            # En cas d'erreur lors de la recherche, retourner une liste vide sans planter.
+            return []
     return urls
 
 
@@ -107,13 +116,8 @@ def extract_products_features_from_url(url: str, company: str) -> Dict[str, List
         # Rechercher les titres pour identifier les produits
         for heading in soup.find_all(["h1", "h2", "h3"]):
             product_name = heading.get_text(separator=" ").strip()
-            # Ignorer les titres trop longs ou ceux qui contiennent le nom de
-            # l'entreprise pour éviter de fausses détections.
-            if not product_name:
-                continue
-            if company.lower() in product_name.lower():
-                continue
-            if len(product_name.split()) > 10:
+            # Ignorer les titres vides ou extrêmement longs (plus de 15 mots)
+            if not product_name or len(product_name.split()) > 15:
                 continue
             # Initialiser une liste vide pour ce produit si elle n'existe pas déjà
             product_map.setdefault(product_name, [])
@@ -125,13 +129,15 @@ def extract_products_features_from_url(url: str, company: str) -> Dict[str, List
             # Trouver le titre le plus proche précédant cette liste pour l'associer
             parent_heading = ul.find_previous(["h1", "h2", "h3"])
             if not parent_heading:
-                continue
-            parent_name = parent_heading.get_text(separator=" ").strip()
-            if parent_name and parent_name.lower() not in company.lower():
-                product_map.setdefault(parent_name, [])
-                for item in items:
-                    if item and item not in product_map[parent_name]:
-                        product_map[parent_name].append(item)
+                # S'il n'y a pas de titre précédent, associer les fonctionnalités à
+                # une catégorie générique.
+                parent_name = "Fonctionnalités diverses"
+            else:
+                parent_name = parent_heading.get_text(separator=" ").strip() or "Fonctionnalités diverses"
+            product_map.setdefault(parent_name, [])
+            for item in items:
+                if item and item not in product_map[parent_name]:
+                    product_map[parent_name].append(item)
         return product_map
     except Exception:
         # En cas d'erreur réseau ou de parsing, retourner un dictionnaire vide.
@@ -253,8 +259,12 @@ def main() -> None:
         if not company or not year:
             st.error("Veuillez remplir les deux champs pour lancer la génération.")
         else:
-            with st.spinner("Recherche et extraction en cours…"):
-                product_data = scrape_company_products(company, year, max_results=10)
+            try:
+                with st.spinner("Recherche et extraction en cours…"):
+                    product_data = scrape_company_products(company, year, max_results=15)
+            except ImportError as e:
+                st.error(str(e))
+                return
             if not product_data:
                 st.warning(
                     "Aucun produit ou fonctionnalité n'a été trouvé.\n"
@@ -281,7 +291,7 @@ def main() -> None:
         - `streamlit`
         - `beautifulsoup4`
         - `requests`
-        - `duckduckgo_search`
+        - `duckduckgo_search` *(permet la recherche sur DuckDuckGo)*
         - `networkx`
         - `pyvis`
         \n
