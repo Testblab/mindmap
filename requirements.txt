@@ -1,5 +1,4 @@
-Flask==3.0.0
-flask-cors==4.0.0
+streamlit
 requests==2.31.0
 beautifulsoup4==4.12.2
 googlesearch-python==1.2.3
