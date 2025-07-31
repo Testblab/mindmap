@@ -199,38 +199,42 @@ def build_mind_map(company: str, data: Dict[str, List[str]]) -> Network:
             net.add_node(node_id, label=feature, color="#76B041", size=15)
             net.add_edge(product, node_id)
     # Options de mise en forme pour un rendu plus agréable
+    # Définir les options du graphe. L'activation du mode hiérarchique permet
+    # d'obtenir une représentation arborescente claire : le nœud racine en
+    # haut, les produits au niveau suivant, puis les fonctionnalités.
     net.set_options(
         """
         var options = {
-          "layout": {
-            "hierarchical": {
-              "enabled": false
+          layout: {
+            hierarchical: {
+              enabled: true,
+              direction: "UD",
+              sortMethod: "hubsize",
+              levelSeparation: 200,
+              nodeSpacing: 150
             }
           },
-          "nodes": {
-            "font": {
-              "size": 14
+          nodes: {
+            font: {
+              size: 14
             },
-            "shape": "box"
+            shape: "box"
           },
-          "edges": {
-            "color": {
-              "color": "#888888"
+          edges: {
+            color: {
+              color: "#888888"
             },
-            "smooth": {
-              "enabled": true,
-              "type": "dynamic"
+            arrows: {
+              to: { enabled: false }
+            },
+            smooth: {
+              enabled: false
             }
           },
-          "physics": {
-            "enabled": true,
-            "barnesHut": {
-              "gravitationalConstant": -20000,
-              "springLength": 100,
-              "springConstant": 0.04
-            }
+          physics: {
+            enabled: false
           }
-        }
+        };
         """
     )
     return net
