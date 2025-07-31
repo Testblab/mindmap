@@ -186,7 +186,7 @@ def search_company_products(company: str, year: str, max_results: int = 5) -> Li
     return urls
 
 
-def extract_products_features_from_url(url: str, company: str) -> Dict[str, List[str]]:
+def extract_products_features_from_url(url: str, company: str, use_advanced: bool = True) -> Dict[str, List[str]]:
     """Extraire des produits et leurs fonctionnalités depuis une page web.
 
     L'approche adoptée ici est heuristique :
@@ -271,10 +271,15 @@ def extract_products_features_from_url(url: str, company: str) -> Dict[str, List
                     if c not in product_map[product_name]:
                         product_map[product_name].append(c)
             # Après avoir collecté le texte de la section, appliquer un résumé et une
-            # extraction de mots‑clés si les modules nécessaires sont disponibles.
-            if SUMMARY_AVAILABLE and section_text_parts:
+            # extraction de mots‑clés si les modules nécessaires sont disponibles et si
+            # l'utilisateur souhaite activer les fonctionnalités avancées. Cela
+            # évite de surcharger l'application lorsqu'``use_advanced`` est False.
+            if use_advanced and SUMMARY_AVAILABLE and section_text_parts:
                 try:
                     full_section_text = " ".join(section_text_parts)
+                    # Limiter la taille du texte à résumer afin d'éviter un calcul trop lourd
+                    if len(full_section_text) > 2000:
+                        full_section_text = full_section_text[:2000]
                     # Résumé automatique de la section
                     auto_abstractor = AutoAbstractor()
                     auto_abstractor.tokenizable_doc = SimpleTokenizer()
@@ -291,10 +296,8 @@ def extract_products_features_from_url(url: str, company: str) -> Dict[str, List
                     keywords_with_scores = kw_extractor.extract_keywords(summary_text)
                     for kw, score in keywords_with_scores:
                         kw_clean = kw.strip()
-                        # Filtrer les mots‑clés qui contiennent le nom de l'entreprise ou du produit
-                        if not kw_clean:
-                            continue
-                        if company.lower() in kw_clean.lower() or product_name.lower() in kw_clean.lower():
+                        # Ne conserver que les mots‑clés jugés valides (noms/phrases pertinentes)
+                        if not _is_valid_feature(kw_clean, company, product_name):
                             continue
                         if kw_clean not in product_map[product_name]:
                             product_map[product_name].append(kw_clean)
@@ -307,7 +310,7 @@ def extract_products_features_from_url(url: str, company: str) -> Dict[str, List
         return {}
 
 
-def scrape_company_products(company: str, year: str, max_results: int = 5) -> Dict[str, List[str]]:
+def scrape_company_products(company: str, year: str, max_results: int = 5, use_advanced: bool = True) -> Dict[str, List[str]]:
     """Aggreguer les produits et fonctionnalités via recherche et scraping.
 
     Combine ``search_company_products`` et ``extract_products_features_from_url`` pour
@@ -324,7 +327,7 @@ def scrape_company_products(company: str, year: str, max_results: int = 5) -> Di
     aggregated: Dict[str, List[str]] = {}
     urls = search_company_products(company, year, max_results=max_results)
     for url in urls:
-        product_map = extract_products_features_from_url(url, company)
+        product_map = extract_products_features_from_url(url, company, use_advanced)
         for product, features in product_map.items():
             aggregated.setdefault(product, [])
             for feature in features:
@@ -411,6 +414,16 @@ def main() -> None:
         company = st.text_input("Nom de l'entreprise", placeholder="Ex.: Apple", key="company")
     with col2:
         year = st.text_input("Année", placeholder="Ex.: 2024", key="year")
+    # Options supplémentaires dans la barre latérale
+    st.sidebar.subheader("Options avancées")
+    use_advanced = st.sidebar.checkbox(
+        "Activer l'extraction avancée (résumé et mots‑clés)", value=False,
+        help="Désactivez cette option pour accélérer l'extraction et réduire l'utilisation de ressources."
+    )
+    max_results = st.sidebar.slider(
+        "Nombre de pages à analyser", min_value=1, max_value=15, value=5,
+        help="Détermine combien de pages web seront analysées pour extraire les produits et fonctionnalités."
+    )
     generate = st.button("Générer")
     if generate:
         if not company or not year:
@@ -418,7 +431,7 @@ def main() -> None:
         else:
             try:
                 with st.spinner("Recherche et extraction en cours…"):
-                    product_data = scrape_company_products(company, year, max_results=15)
+                    product_data = scrape_company_products(company, year, max_results=max_results, use_advanced=use_advanced)
             except ImportError as e:
                 st.error(str(e))
                 return
