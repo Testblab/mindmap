@@ -1,128 +1,294 @@
 """
-MindMap Application
-===================
+Application Streamlit pour générer une mind‑map des produits et de leurs fonctionnalités
+d'une entreprise donnée à une année donnée.
 
-This module implements a simple Flask web application for generating interactive
-mind maps of a company's products and their associated features for a given year.
-The front‑end provides a form where a user can enter the name of a company
-and a year. When the user clicks the "Générer" button, the back‑end scrapes
-publicly available web pages and social media posts relevant to that company
-for the specified year. It then parses the text to extract product names and
-descriptions, organising them into a hierarchical structure that the
-front‑end can visualise as a mind map.
+Cette application propose deux champs d'entrée :
+  • ``Nom de l'entreprise`` pour spécifier le nom de l'organisation à analyser;
+  • ``Année`` pour limiter la recherche à une période précise.
 
-To keep the example self‑contained and understandable, the scraping logic
-implemented here is deliberately simple. It performs a Google search using
-the `googlesearch` library and fetches the HTML from the top few results.
-From these pages it looks for instances of words like "produit", "service"
-or "produits" followed by capitalised words as a naive proxy for product
-names. It then collects sentences containing those names as potential
-features. In real applications you would want to rely on dedicated APIs,
-structured datasets or more advanced natural language processing to improve
-accuracy and respect the terms of service of the sites you scrape.
+Après avoir renseigné ces champs et cliqué sur le bouton ``Générer``, le backend
+effectue les opérations suivantes :
 
-Usage:
-    1. Install the required dependencies: `pip install flask bs4 googlesearch-python requests`
-    2. Start the server by running this module: `python app.py`
-    3. Visit http://localhost:5000/ in your browser to use the app.
+  1. Exécute une requête de recherche sur DuckDuckGo pour récupérer des
+     articles et pages mentionnant les produits et fonctionnalités de
+     l'entreprise ciblée. La recherche est limitée à un nombre maximum de
+     résultats (configurable).
+  2. Télécharge le contenu des pages retournées, puis analyse le HTML avec
+     BeautifulSoup afin d'extraire des titres de sections (qui servent de
+     supposés noms de produits) et des listes (éléments ``<li>``) représentant
+     des fonctionnalités associées.
+  3. Agrège l'ensemble des produits et fonctionnalités trouvées dans un
+     dictionnaire de la forme ``{Produit : [fonctionnalité1, fonctionnalité2,…]}``.
+  4. Construit un graphe interactif à l'aide de ``pyvis`` où le nœud central
+     représente l'entreprise, les nœuds de premier niveau représentent les
+     produits et les nœuds de second niveau les fonctionnalités. Les liens
+     permettent de visualiser la relation hiérarchique entre ces éléments.
 
-This file should be executed from the repository root or with the working
-directory set to the same folder containing this file.
+Le graphe est rendu dans l'interface Streamlit grâce au composant HTML et au
+fichier HTML généré par pyvis. Ce code nécessite l'installation préalable des
+packages suivants : ``streamlit``, ``beautifulsoup4``, ``requests``,
+``duckduckgo_search``, ``networkx`` et ``pyvis``.
 """
 
-
+import urllib.parse
+from typing import Dict, List
 
 import streamlit as st
-import requests
 from bs4 import BeautifulSoup
-from googlesearch import search
-import json
+import requests
+import networkx as nx  # type: ignore
+from pyvis.network import Network  # type: ignore
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Mind Map des Produits", layout="wide")
-st.title("🧠 Générateur de Mind Map de Produits d'une Entreprise")
+try:
+    # ``duckduckgo_search`` permet de faire des recherches sans clé API et sans
+    # dépendance à un moteur comme Google ou Bing. Si ce module n'est pas
+    # installé, l'utilisateur devra l'ajouter (``pip install duckduckgo_search``).
+    from duckduckgo_search import DDGS  # type: ignore
+except ImportError:
+    DDGS = None  # type: ignore
 
-# Entrées utilisateur
-company = st.text_input("Nom de l'entreprise")
-year = st.text_input("Année (ex : 2024)")
 
-if st.button("Générer") and company and year:
-    with st.spinner("Recherche des produits et fonctionnalités..."):
+def search_company_products(company: str, year: str, max_results: int = 5) -> List[str]:
+    """Rechercher des pages web mentionnant des produits et fonctionnalités.
 
-        def get_links(query):
-            try:
-                return list(search(query, num_results=10))
-            except Exception as e:
-                return []
+    Cette fonction utilise DuckDuckGo via le package ``duckduckgo_search`` pour
+    exécuter une requête textuelle et récupérer les URLs des résultats. Elle
+    concatène le nom de l'entreprise, des mots clés sur les produits et
+    l'année sélectionnée.
 
-        def extract_info_from_url(url):
-            try:
-                resp = requests.get(url, timeout=5)
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                text = soup.get_text()
-                return text
-            except:
-                return ""
+    Args:
+        company: Nom de l'entreprise à rechercher.
+        year: Année pour limiter la recherche.
+        max_results: Nombre maximum d'URLs à retourner.
 
-        def extract_mindmap(company, year):
-            query = f"{company} produits fonctionnalités {year}"
-            links = get_links(query)
-            data = {}
-            for link in links:
-                content = extract_info_from_url(link)
-                if company.lower() in content.lower():
-                    # Extraction très basique par phrases contenant "produit" ou "fonctionnalité"
-                    lines = content.split(".\n")
-                    for line in lines:
-                        if "produit" in line.lower() or "fonctionnalité" in line.lower():
-                            for word in line.split():
-                                if word.istitle():
-                                    prod = word.strip(".,:;()[]")
-                                    if prod not in data:
-                                        data[prod] = []
-                                    if "fonctionnalité" in line.lower():
-                                        data[prod].append(line.strip())
-            return data
+    Returns:
+        Liste d'URLs correspondant aux résultats de recherche.
+    """
+    query = f"{company} produits fonctionnalités {year}"
+    urls: List[str] = []
+    if DDGS is None:
+        # Si ``duckduckgo_search`` n'est pas disponible, retourner une liste vide.
+        return urls
+    # Utilisation du contexte manager pour s'assurer de la fermeture des sessions.
+    with DDGS() as ddgs:
+        for result in ddgs.text(query, region="wt-wt", safesearch="Moderate", max_results=max_results):
+            href = result.get("href")
+            if href:
+                urls.append(href)
+    return urls
 
-        mindmap_data = extract_mindmap(company, year)
 
-        if not mindmap_data:
-            st.warning("Aucune information trouvée.")
+def extract_products_features_from_url(url: str, company: str) -> Dict[str, List[str]]:
+    """Extraire des produits et leurs fonctionnalités depuis une page web.
+
+    L'approche adoptée ici est heuristique :
+    - Les balises de titre (``<h1>``, ``<h2>``, ``<h3>``) sont considérées comme des
+      candidats pour des noms de produits.
+    - Les listes (``<ul>``, ``<ol>``) situées après un titre sont interprétées
+      comme des listes de fonctionnalités associées au produit identifié par le
+      dernier titre rencontré.
+
+    Args:
+        url: URL de la page à analyser.
+        company: Nom de l'entreprise (permet d'ignorer les titres correspondant
+                 à l'entreprise elle‑même).
+
+    Returns:
+        Un dictionnaire où chaque clé est le nom d'un produit et la valeur une
+        liste de fonctionnalités extraites.
+    """
+    product_map: Dict[str, List[str]] = {}
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return product_map
+        soup = BeautifulSoup(response.content, "html.parser")
+        # Rechercher les titres pour identifier les produits
+        for heading in soup.find_all(["h1", "h2", "h3"]):
+            product_name = heading.get_text(separator=" ").strip()
+            # Ignorer les titres trop longs ou ceux qui contiennent le nom de
+            # l'entreprise pour éviter de fausses détections.
+            if not product_name:
+                continue
+            if company.lower() in product_name.lower():
+                continue
+            if len(product_name.split()) > 10:
+                continue
+            # Initialiser une liste vide pour ce produit si elle n'existe pas déjà
+            product_map.setdefault(product_name, [])
+        # Extraire les fonctionnalités depuis les listes de la page
+        for ul in soup.find_all(["ul", "ol"]):
+            items = [li.get_text(separator=" ").strip() for li in ul.find_all("li")]
+            if not items:
+                continue
+            # Trouver le titre le plus proche précédant cette liste pour l'associer
+            parent_heading = ul.find_previous(["h1", "h2", "h3"])
+            if not parent_heading:
+                continue
+            parent_name = parent_heading.get_text(separator=" ").strip()
+            if parent_name and parent_name.lower() not in company.lower():
+                product_map.setdefault(parent_name, [])
+                for item in items:
+                    if item and item not in product_map[parent_name]:
+                        product_map[parent_name].append(item)
+        return product_map
+    except Exception:
+        # En cas d'erreur réseau ou de parsing, retourner un dictionnaire vide.
+        return {}
+
+
+def scrape_company_products(company: str, year: str, max_results: int = 5) -> Dict[str, List[str]]:
+    """Aggreguer les produits et fonctionnalités via recherche et scraping.
+
+    Combine ``search_company_products`` et ``extract_products_features_from_url`` pour
+    constituer un dictionnaire exhaustif des produits et de leurs fonctionnalités.
+
+    Args:
+        company: Nom de l'entreprise à analyser.
+        year: Année ciblée pour la recherche.
+        max_results: Nombre maximum de pages à analyser.
+
+    Returns:
+        Dictionnaire ``{Produit : [fonctionnalité1, fonctionnalité2, …]}``.
+    """
+    aggregated: Dict[str, List[str]] = {}
+    urls = search_company_products(company, year, max_results=max_results)
+    for url in urls:
+        product_map = extract_products_features_from_url(url, company)
+        for product, features in product_map.items():
+            aggregated.setdefault(product, [])
+            for feature in features:
+                if feature not in aggregated[product]:
+                    aggregated[product].append(feature)
+    return aggregated
+
+
+def build_mind_map(company: str, data: Dict[str, List[str]]) -> Network:
+    """Créer un graphe pyvis représentant la mind‑map des produits et fonctionnalités.
+
+    Le nœud racine correspond à l'entreprise. Les produits sont des nœuds
+    connectés au nœud racine, et chaque fonctionnalité est reliée à son
+    produit.
+
+    Args:
+        company: Nom de l'entreprise (utilisé comme nœud central).
+        data: Dictionnaire ``{Produit : [fonctionnalité1, fonctionnalité2, …]}``.
+
+    Returns:
+        Objet ``pyvis.network.Network`` prêt à être sauvegardé et affiché.
+    """
+    net = Network(height="750px", width="100%", bgcolor="#ffffff", font_color="#343434")
+    net.barnes_hut()
+    # Ajouter le nœud racine
+    net.add_node(company, label=company, color="#E4572E", size=30)
+    for product, features in data.items():
+        # Ajouter le nœud produit
+        net.add_node(product, label=product, color="#4E79A7", size=20)
+        net.add_edge(company, product)
+        for feature in features:
+            # Identifier le nœud de fonctionnalité de manière unique pour éviter
+            # d'écraser des nœuds identiques appartenant à différents produits.
+            node_id = f"{product}→{feature}"
+            net.add_node(node_id, label=feature, color="#76B041", size=15)
+            net.add_edge(product, node_id)
+    # Options de mise en forme pour un rendu plus agréable
+    net.set_options(
+        """
+        var options = {
+          "layout": {
+            "hierarchical": {
+              "enabled": false
+            }
+          },
+          "nodes": {
+            "font": {
+              "size": 14
+            },
+            "shape": "box"
+          },
+          "edges": {
+            "color": {
+              "color": "#888888"
+            },
+            "smooth": {
+              "enabled": true,
+              "type": "dynamic"
+            }
+          },
+          "physics": {
+            "enabled": true,
+            "barnesHut": {
+              "gravitationalConstant": -20000,
+              "springLength": 100,
+              "springConstant": 0.04
+            }
+          }
+        }
+        """
+    )
+    return net
+
+
+def main() -> None:
+    """Fonction principale de l'application Streamlit.
+
+    Elle définit l'interface utilisateur avec deux champs d'entrée et un bouton.
+    À l'action du bouton, elle lance la recherche, le scraping et l'affichage du
+    graphe interactif.
+    """
+    st.set_page_config(page_title="Mind‑map Produits et Fonctionnalités", layout="wide")
+    st.title("Générateur de Mind‑map des Produits d'une Entreprise")
+    st.write(
+        "Renseignez le nom de l'entreprise et l'année pour générer une mind‑map des produits et de leurs fonctionnalités."
+    )
+    # Champs de saisie dans une colonne pour une meilleure présentation
+    col1, col2 = st.columns(2)
+    with col1:
+        company = st.text_input("Nom de l'entreprise", placeholder="Ex.: Apple", key="company")
+    with col2:
+        year = st.text_input("Année", placeholder="Ex.: 2024", key="year")
+    generate = st.button("Générer")
+    if generate:
+        if not company or not year:
+            st.error("Veuillez remplir les deux champs pour lancer la génération.")
         else:
-            st.success("Données récupérées !")
+            with st.spinner("Recherche et extraction en cours…"):
+                product_data = scrape_company_products(company, year, max_results=10)
+            if not product_data:
+                st.warning(
+                    "Aucun produit ou fonctionnalité n'a été trouvé.\n"
+                    "Vérifiez l'orthographe du nom de l'entreprise et de l'année, ou essayez d'augmenter le nombre de résultats."
+                )
+            else:
+                net = build_mind_map(company, product_data)
+                # Sauvegarder le graphe en fichier HTML temporaire
+                file_name = f"mindmap_{urllib.parse.quote_plus(company)}_{urllib.parse.quote_plus(year)}.html"
+                net.save_graph(file_name)
+                # Lire le contenu pour l'afficher dans Streamlit
+                with open(file_name, "r", encoding="utf-8") as f:
+                    html_content = f.read()
+                components.html(html_content, height=750, scrolling=True)
+    # Informations supplémentaires dans la barre latérale
+    st.sidebar.header("À propos")
+    st.sidebar.markdown(
+        """
+        Cette application effectue un **scraping** sommaire des pages trouvées via
+        DuckDuckGo pour identifier les produits et leurs fonctionnalités. Les
+        résultats peuvent varier en fonction de la qualité des pages retournées et
+        des heuristiques de parsing utilisées.\n\n
+        **Dépendances nécessaires :**
+        - `streamlit`
+        - `beautifulsoup4`
+        - `requests`
+        - `duckduckgo_search`
+        - `networkx`
+        - `pyvis`
+        \n
+        Installez-les avec : `pip install streamlit beautifulsoup4 requests duckduckgo_search networkx pyvis`.
+        """
+    )
 
-            import streamlit.components.v1 as components
 
-            # Générer le HTML jsMind
-            def make_jsmind_json(data):
-                result = [{"id": "root", "isroot": True, "topic": company}]
-                pid = 0
-                for i, prod in enumerate(data):
-                    prod_id = f"p{i}"
-                    result.append({"id": prod_id, "parentid": "root", "topic": prod})
-                    for j, feat in enumerate(data[prod]):
-                        result.append({"id": f"f{i}{j}", "parentid": prod_id, "topic": feat[:50] + ('...' if len(feat) > 50 else '')})
-                return result
-
-            tree_data = make_jsmind_json(mindmap_data)
-            tree_json = json.dumps(tree_data)
-
-            html_code = f"""
-            <div id="jsmind_container" style="width:100%;height:500px;border:1px solid #ccc"></div>
-            <script src="https://cdn.jsdelivr.net/npm/jsmind@0.4.6/es6/jsmind.js"></script>
-            <link type="text/css" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jsmind@0.4.6/style/jsmind.css" />
-            <script>
-                const mind = {{"meta":{{"name":"mindmap"}},"format":"node_tree","data":{json.dumps(tree_data[0])}}};
-                mind.data.children = {json.dumps(tree_data[1:])};
-                const options = {{
-                    container: 'jsmind_container',
-                    editable: false,
-                    theme: 'primary'
-                }};
-                const jm = new jsMind(options);
-                jm.show(mind);
-            </script>
-            """
-            components.html(html_code, height=550)
-
-else:
-    st.info("Veuillez entrer un nom d'entreprise et une année pour générer la carte.")
+if __name__ == "__main__":
+    main()
